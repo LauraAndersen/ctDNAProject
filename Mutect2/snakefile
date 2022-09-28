@@ -1,0 +1,12 @@
+import pandas as pd
+
+configfile: "config/config.yaml"
+
+# Load the input tsv file
+sample_df = pd.read_csv(config["input_file"], sep = '\t')
+
+rule mutect2:
+    input:
+        
+
+

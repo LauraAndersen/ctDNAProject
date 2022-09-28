@@ -1,0 +1,10 @@
+# Specify input file and output folders
+input_file: "input/c2iBladder_tumor_bam_files_SOFTLINKS.tsv" # "input/c2iBladder_plasma_bam_files.tsv"
+sample_ID_column: 'Sample_ID'
+filepath_column: 'input_file'
+
+
+
+
+
+
