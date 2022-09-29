@@ -1,0 +1,156 @@
+import pandas as pd
+
+configfile: "config/config.yaml"
+
+# Load the input tsv file
+sample_df = pd.read_csv(config["input_file"], sep = '\t')
+
+### Workflow ###
+rule all:
+    input:
+        expand("{output}{sample}/{sample}.cna.seg", output = config["ichorCNA_output"], sample = sample_df[config['sample_ID_column']])
+
+# Input functions
+def get_input_files(df, key, value, suffix = ""):
+    # Define a function to extract input file paths from df
+    def input_function(wildcards):
+        return sample_df.loc[sample_df[key] == wildcards.sample, value].item() + suffix
+    
+    return input_function
+
+def get_input_txt(folder, txtpath):
+    def input_function(wildcards):
+        files = os.listdir(folder)
+
+        if not os.path.exists(txtpath):
+            os.makedirs(txtpath)
+
+        with open(txtpath + wildcards.sample + '.txt', 'w') as f:
+            for i in files:
+                s = i.split('.', 1)[0]
+                if s != wildcards.sample:
+                    f.write(folder+i + '\t')
+        f.close()
+        return txtpath + wildcards.sample + '.txt'
+    
+    return input_function
+
+## The read_counter needs an indexed BAM file. The indexed BAM file must have the extension .bam.bai. 
+## /The index file should be located in the same directory as the BAM file
+# Generate index file
+rule create_index_file:
+    input:
+        "{bam_file}"
+    output:
+        "{bam_file}.bai"
+    shell:
+        "samtools index {input} {output}"
+
+# Generate read count file
+get_bam = get_input_files(sample_df, config['sample_ID_column'], config['filepath_column'])
+get_bai = get_input_files(sample_df, config['sample_ID_column'], config['filepath_column'], suffix = ".bai")
+
+rule read_count:
+    input:
+        bam = get_bam,
+        bambai = get_bai  #check for the bam.bai file before it starts
+    output:
+        config["preprocess_output"] + "wig_files/{sample}.bin" + str(config["windowSize"]) + ".wig"
+    params:
+        readCounter = config["readCounterScript"],
+        window = config["windowSize"], 
+        quality = config["mappingQuality"], # Specify the mapping quality value below which reads are ignored
+        chromosome = config["chromosomes"] # Specify the entries and order of sequences to analyze [ALL], the <string> should be a comma-delimited list (NO spaces)
+    log:
+        config["log"]+ "read_count/{sample}.bin" + str(config["windowSize"]) + ".log"
+    threads: 1
+    shell:
+        "{params.readCounter} "
+        "-c {params.chromosome} "
+        "-w {params.window} "
+        "-q {params.quality} "
+        "{input.bam} > {output} 2> {log}"
+
+if config['NormalsExist'] == False:
+    create_panel_input = get_input_txt(config["preprocess_output"] + "wig_files/", config["preprocess_output"] + "normal_panels_txt/") #the {sample}.txt file will then contain all other samples but itself
+else:
+    pass # do something when you know the structure of the normal samples
+
+# Generate a file with panel of normals
+rule create_panel_of_normals:
+    input:
+        wig_files = expand(config["preprocess_output"] + "wig_files/{sample}.bin" + str(config["windowSize"]) + ".wig", sample = sample_df[config['sample_ID_column']]),
+        txt_file = create_panel_input
+    output:
+        config['preprocess_output'] + "normal_panels/{sample}_median.rds"
+    params:
+        libdir               = config["ichorCNA_folder"],
+        PanelOfNormalsScript = config["ichorCNA_folder"] + config['PanelOfNormalsScript'],
+        outdir               = config['preprocess_output'] + 'normal_panels/' + "{sample}",
+        gcWIG                = config["ichorCNA_folder"] + config["ichorCNA_gcWIG"],
+        mapWIG               = config["ichorCNA_folder"] + config["ichorCNA_mapWIG"],
+        centromere           = config["ichorCNA_folder"] + config["ichorCNA_centromere"]
+    log:
+        config["log"] + "create_panel_of_normals/{sample}.log"
+    threads: 1
+    shell:
+        "Rscript {params.PanelOfNormalsScript} "
+        "--filelist {input.txt_file} "
+        "--gcWig {params.gcWIG} "
+        "--mapWig {params.mapWIG} "
+        "--centromere {params.centromere} "
+        "--outfile {params.outdir} 2> {log}"
+
+
+
+# Run ichorCNA
+rule ichorCNA:
+    input:
+        wig = config["preprocess_output"] + "wig_files/{sample}.bin" + str(config["windowSize"]) + ".wig",
+        normalPanel = config['preprocess_output'] + "normal_panels/{sample}_median.rds"
+    output:
+        config["ichorCNA_output"] + "{sample}/{sample}.cna.seg"
+    params:
+        outdir                 = config["ichorCNA_output"] + "{sample}",
+        libdir                 = config["ichorCNA_folder"],
+        ichorcnaScript         = config["ichorCNA_folder"] + config["ichorCNA_script"],
+        gcWIG                  = config["ichorCNA_folder"] + config["ichorCNA_gcWIG"],
+        mapWIG                 = config["ichorCNA_folder"] + config["ichorCNA_mapWIG"],
+        refGen                 = config["ichorCNA_genomeBuild"],
+        genomeStyle            = config["ichorCNA_genomeStyle"],
+        ploidy                 = config["ichorCNA_ploidy"],
+        normal                 = config["ichorCNA_normal"],
+        maxCN                  = config["ichorCNA_maxCN"],
+        centromere             = config["ichorCNA_folder"] + config["ichorCNA_centromere"],
+        includeHOMD            = config["ichorCNA_includeHOMD"],
+        chrs                   = config["ichorCNA_chrs"],
+        chrTrain               = config["ichorCNA_chrTrain"],
+        estimateNormal         = config["ichorCNA_estimateNormal"],
+        estimatePloidy         = config["ichorCNA_estimatePloidy"],
+        estimateScPrevalence   = config["ichorCNA_estimateScPrevalence"],
+        scStates               = config["ichorCNA_scStates"]
+    log:
+        config["log"] + "runIchorCNA/{sample}.log"
+    threads: 1
+    shell:
+        "Rscript {params.ichorcnaScript} "
+        "--libdir {params.libdir} "
+        "--id {wildcards.sample} "
+        "--WIG {input.wig} "
+        "--gcWig {params.gcWIG} "
+        "--mapWig {params.mapWIG} "
+        "--genomeBuild {params.refGen} "
+        "--genomeStyle {params.genomeStyle} "
+        "--ploidy \"{params.ploidy}\" "
+        "--normal \"{params.normal}\" "
+        "--maxCN {params.maxCN} "
+        "--centromere {params.centromere} "
+        "--normalPanel \"{input.normalPanel}\" "
+        "--includeHOMD {params.includeHOMD} "
+        "--chrs \"{params.chrs}\" " 
+        "--chrTrain \"{params.chrTrain}\" "
+        "--estimateNormal {params.estimateNormal} "
+        "--estimatePloidy {params.estimatePloidy} "
+        "--estimateScPrevalence {params.estimateScPrevalence} "
+        "--scStates \"{params.scStates}\" "
+        "--outDir {params.outdir} 2> {log}"

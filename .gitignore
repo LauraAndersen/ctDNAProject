@@ -2,4 +2,6 @@
 ######################
 .DS_Store
 ._.DS_Store
-ichorCNA
+._.gitignore
+.gitignore
+ichorCNA/config/._config.yaml
